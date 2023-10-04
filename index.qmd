@@ -14,48 +14,13 @@ knitr:
 draft: false
 ---
 
-```{r, delay}
-#| include: false
-#| eval: false
-# curry a verb
-# returns a function (...) -> (data -> data) which curries the provided verb.
-# the innermost function assumes the data provided 
-#    is the first arg to the fully specified verb call
-currify_verb <- function(verb) {
-    function(...) {
-        intention <- function(.data) {
-            return(purrr::partial(verb)(.data, ...))
-        }
-        memoise::memoise(intention)
-    }
-}
-```
-
-
-```{r, composition}
-#| include: false
-#| eval: false
-`%.%` = function(g, f) function(...) g(f(...))
-`%;%` = function(f, g) function(...) g(f(...))
-```
-
-```{r, interfaces}
-#| include: false
-#| eval: false
-filtering = currify_verb(filter)
-mutating = currify_verb(mutating)
-summarizing = currify_verb(summarize)
-grouping = currify_verb(group_by)
-ungrouping = currify_verb(ungroup)
-```
-
 This post proposes a dialect for data frame operations that I call `currr`.
 (I am not married to the name.)
-You can find and install a (very unfinished) package on [Github](https://github.com/mikedecr/currr).
+You can find and install a very unfinished package on [Github](https://github.com/mikedecr/currr).
 
 `currr` is built on `dplyr`, but it uses a distinct grammar.
 
-A typical `dplyr` workflow pipes a data frame through a series of functions
+A typical `dplyr` workflow will pipe a data frame through a series of functions
 (in this case `filter`, `group_by`, and `summarize`).
 
 ```{r}
@@ -75,13 +40,13 @@ penguins |>
 ```
 
 The purpose of `currr` is to provide a convenient way to _pre-define_ functions that perform these data manipulation steps, without referring to a data frame.
-Instead of `filter`, `group_by`, and `summarize`, here we use `filtering`, `grouping`, and `summarizing` to create _new functions_.
+Instead of `filter`, `group_by`, and `summarize`, here we use `currr::filtering`, `currr::grouping`, and `currr::summarizing` to create _new functions_.
 
 
 ```{r, currr-functions-example}
 library(currr)
 
-# each of these is a function of a data frame
+# each of these returns a new function that is dataframe -> dataframe
 flt_sex_FM = filtering(sex %in% c("male", "female"))
 by_sex_isl = grouping(sex, island)
 smz_mass = summarizing(
@@ -100,13 +65,13 @@ These functions can be rearranged, composed, and called later.
 (smz_mass %.% by_sex_isl %.% flt_sex_FM)(penguins)
 ```
 
-At this point you may be wondering, 
+At this point you may be wondering,
 
-> If `dplyr` is already so good, why do I need this confusing, tedious style?
+> If `dplyr` is already so good, why should I complicate my life with this new style?
 
-and I intend to give you a thorough answer as the post proceeds.
+...and this post will try to answer.
 
-This post proceeds in three sections:
+We proceed in three sections below:
 
 1. **The tl;dr**: how to use and understand `currr`
 2. **For the skeptics**: why you would want to use `currr`.
@@ -121,11 +86,14 @@ There are only two things going on here.
 1. `currr` code is just curried `dplyr` code.
 1. `currr` functions are meant to be composed without evaluating them immediately.
 
-### `currr` code is just curried `dplyr` code.
+### Thing 1 of 2: `currr` code is just curried `dplyr` code.
 
 "Currying" a function means turning a function of many arguments into a function of fewer arguments.
 I have [written about this before](https://mikedecr.netlify.app/blog/partial_fns_ggplot/), but we will explain it plenty here too.^[
     If `add(1, 2)` returns `3`, then `curry(add, 1)` creates a new function that adds an argument to `1`.
+    _Technically speaking_ currying has a stricter definition than that: currying is turning a multi-argument function into a series of lambda functions that each take one argument.
+    What we are doing is "merely" partial application of arguments.
+    [Read about the differences](https://medium.com/@AlecBenzer/currying-vs-partial-application-bb72a14e5d59) if you are so inclined.
 ]
 
 `dplyr` functions like `filter` and `select` have analogous `currr` functions like `filtering` and `selecting`.
@@ -148,13 +116,16 @@ filtering(sex %in% c("male", "female"))
 ```
 
 And instead of getting a data frame back, I get a _new function_.
-That resulting function would take me from data frame to data frame, but I can pass that data frame some time later.
-I have _curried_ the `filter` function with the argument `sex %in% c("male", "female")`.
-In other words, I created a version of the `filter` function with that boolean condition pre-specified.
-When I call that function later, it will invoke the boolean expression without me specifying it later.
+The new function maps me from dataframe to dataframe.
+I can pass that dataframe later on, though.
+I don't have to do it right now.
 
-To assure you how it works, I will build the same function _and then_ pass the `penguins` data to the curried function.
-I will get the same result as the original, fully-specified `filter` call.
+Another way to say this is that I have partially applied the argument `sex %in% c("male", "female")` to the `filter` function.
+That is, I created a version of the `filter` function with that boolean condition pre-specified.
+When I call that function later, it will invoke the boolean expression without needing me to pass it again.
+
+To assure you that it works, here I build the same function, give it a name, and then pass the `penguins` data.
+I get the same result as the original, fully-specified `filter` call.
 
 ```{r, currr-filtering-with-data}
 flt_sex = filtering(sex %in% c("male", "female"))
@@ -164,18 +135,17 @@ flt_sex(penguins)
 You typically don't want to pass the data immediately after creating the function.
 The purpose of `currr` is to create the curried function and evaluate it on data later on.
 Why delay the evaluation of data?
-Because by _separating the function from the data_, it is easier to compose and recycle functionality and multiple datasets.
+Because by _separating the function from the data_, it is easier to compose and recycle functionality to act on multiple datasets.
 More explanation in the "Why" section below.
 
 
-### `currr` functions can be composed without evaluating on data.
+### Thing 2 of 2: `currr` functions can be composed without evaluating on data.
 
-Most R uders hear "function composition" and think of the pipe operator `|>`.
-The pipe operator turns a nested function call like `h(g(f(x)))` into something like `x |> f() |> g() |> h()`.
-That is convenient, but its behavior is too _eager_ for our needs.
-We want to separate the `x` from the `f`, `g`, and `h`.
+Most R users hear "function composition" and think of the pipe operator `|>`, which turns a nested function call like `h(g(f(x)))` into `x |> f() |> g() |> h()`.
+That is convenient, but its behavior is too eager for our needs.
+We want to combine functions without passing the data `x`.
 
-I could get around this limitation by writing a new function that combines `f`, `g`, and `h` and then passing `x` to that function like this...
+I could write a new function that combines `f`, `g`, and `h` and then pass `x` to that function like this...
 
 ```{r}
 #| eval: false
@@ -184,26 +154,40 @@ fgh = function(...) f(...) |> g() |> h()
 x |> fgh()
 ```
 
-...but it is a bit clunky
-Mathemematical notation for function composition, meanwhile, is simple: $fgh = h \cdot g \cdot f$.^[
+...but that is a bit clunky.
+Mathematical notation for function composition, meanwhile, is simple: $fgh = h \cdot g \cdot f$.^[
     You can read more about function composition in [this other post](https://mikedecr.netlify.app/blog/composition/) as well.
 ]
+Can I achieve something that simple in R?
+Yes.
 
-`currr` provides operators to two function composition operators to make this easy.
+`currr` provides operators for two different kinds of function composition.
 First, the `%.%` operator for classical mathematical composition: `(g %.% f)(x)` is like `g(f(x))`.
-Second, a postfix-style `%;%` composition operator that reads more "pipe-like": `(f %;% g)(x)` is like `x |> f() |> g()`.^[
-    There is also `purrr::compose`, which takes a vector of functions and an optional `.dir` argument to switch the direction of composition.
+You should read `g %.% f` as "do `g` after `f`".
+Second, we have a postfix-style `%;%` composition operator that reads more "pipe-like": `(f %;% g)(x)` is like `x |> f() |> g()`.^[
+    There also exists `purrr::compose`, which takes an arbitrary number of functions and an optional `.dir` argument to switch the direction of composition.
     Take your pick.
 ]
+`f %;% g` is "do `f` and then `g`".
 
-These operators let us take little functions and combine them without evaluating on data.
-Take the example at the top of the post. These are functions.
+These operators let us compose little functions into bigger functions without applying them on data.
+Take the example at the top of the post. Each of these objects is a function.
 
-```{r, currr-functions-example}
+```{r, currr-functions-example-rehash}
 #| eval: false
+flt_sex_FM = filtering(sex %in% c("male", "female"))
+
+by_sex_isl = grouping(sex, island)
+
+smz_mass = summarizing(
+    mass_med = median(body_mass_g, na.rm = TRUE),
+    mass_mean = mean(body_mass_g, na.rm = TRUE),
+    mass_std = sd(body_mass_g, na.rm = TRUE),
+    .groups = "drop"
+)
 ```
 
-I compose them into a "chain" of operations (really, a new function) without evaluating them.
+I compose them into a "chain" of operations, which is itself a new function, without evaluating it.
 
 ```{r, currr-functions-comp}
 mass_by_sex_isl = (flt_sex_FM %;% by_sex_isl %;% smz_mass)
@@ -234,6 +218,7 @@ penguins |>
 ```
 
 Okay, I also want to compute the same stats, grouped by `sex`.
+Notice I have to write the `summarize` step again.
 
 ```{r}
 penguins |>
@@ -246,8 +231,7 @@ penguins |>
     )
 ```
 
-Notice I had to write the `summarize` step all over again.
-And if I also wanted it grouped by sex _and_ island...
+And if I also wanted it grouped by sex _and_ island, summarize yet again.
 
 ```{r}
 penguins |>
@@ -262,8 +246,8 @@ penguins |>
 
 Now I have three instances in my code where I need to write the same `summarize` code, because I wanted to see it three different ways.
 And if I want to change that code (say, add a mean abs. deviation statistic), I have to change it in multiple places.
-This is a good reason to use a function!
-`currr` gives us a way write that function conveniently and composably.
+This is a good scenario to write a function!
+`currr` gives us a way to write that function conveniently and composably.
 We write the `summarize` step one time and re-use whenever we want later.
 
 ```{r}
@@ -284,13 +268,16 @@ penguins |> group_by(sex, island) |> smz_mass()
 This is the benefit we get by _separating the data from the functionality_.
 
 - When functions are pre-defined, we can pass whatever data whenever we want.
-- It is easier to abstract over the data because we wrote modular functions instead of a bundled pipeline.
-- We pay a little up-front cost to store the `dplyr` verb as a function, but we amortize the cost of repeated invocations of the same functionality.
-  Lots of little functions may look silly in isolation, but they play important roles when composed with other functions.
-- We greatly reduce the cost of changing key functionality; change the function definition in one place, and inherit the change everywhere the function is called.
+- It is easier to abstract over the data because we wrote modular functions instead of a pipeline that forces you to provide the data up front.
+- We expend a little up-front effort to define these little functions, but we amortize the costs when we invoke those functions repeatedly.
+  Lots of little functions may look silly in isolation, but they aren't silly when you compose them to create bigger functionality.
+- We greatly reduce the cost of _changing_ the definitions of these functions; change the function definition in one place, and inherit the change everywhere the function is called.
 
 
 # How `currr` works
+
+All of `currr` fits in [one small file](https://github.com/mikedecr/currr/blob/main/R/currr.R).
+Although in fairness, it probably isn't finished yet.
 
 `currr` works by creating curryable `dplyr` verbs.
 For example:
@@ -298,6 +285,7 @@ For example:
 ```{r, interfaces}
 #| include: true
 #| eval: false
+selecting <- currify_verb(dplyr::select)
 ```
 
 The implementation of `currify_verb` is, in turn...
@@ -305,21 +293,26 @@ The implementation of `currify_verb` is, in turn...
 ```{r, delay}
 #| include: true
 #| eval: false
+currify_verb <- function(verb) {
+    function(...) {
+        intention <- function(.data) {
+            return(purrr::partial(verb)(.data, ...))
+        }
+        memoise::memoise(intention)
+    }
+}
 ```
+
 
 The outermost function `currify_verb` takes a `verb` and returns a new function of args `...`.
 The args are then used to return _another function_ of `.data`, enclosing both the verb and the args in the environment of the innermost function.
 I call the innermost function an `intention`, because it declares an intent to evaluate a verb without actually evaluating it (yet).
 
 Another notable detail is that we return not the `intention` object but a memoized `intention` using the [memoise](https://memoise.r-lib.org/) package.
-_Memoization_ associates a function value with the arguments that created that value, and caches the result.
-This way, if a function is ever called again with the same arguments as before, we return the cached value associated with those arguments instead of recomputing the value anew.
-
-Memoization is commonly used in functional programming because we want to express values as the result of functions.
-If data have to pass through intermediate states, we want that state to be handled inside of functions instead of sitting in the open in main environment of the program.
-Contrast this to `dplyr`, where we would avoid recomputation by storing a copy of our data in some intermediate state that we can use as a midway point to branch out from.
-Memoization lets us get all the efficiency of intermediate data without polluting our program environment with stateful data that we don't care about.
-Instead, we are only responsible for defining and composing the functionality that we want to invoke to transform our raw data.
+Memoization caches function values in (morally) a hash table keyed by the function arguments.
+If I evaluate a function for the first time, I hash the value by the function arguments.
+If I evaluate a function a second time or more, I can lookup the value in the lookup table instead of recomputing the value from scratch.
+This gives us the same efficiency as, say, storing a copy of data in some intermediate state, without the need to pollute our environment with intermediately-stateful data that we don't care about unto itself.
 Now that's functional programming!
 
 The only other thing to note is how we implement function composition:
@@ -327,11 +320,12 @@ The only other thing to note is how we implement function composition:
 ```{r, composition}
 #| include: true
 #| eval: false
+`%.%` <- function(g, f) function(...) g(f(...))
 ```
 
-In R, we can define our own binary operations as functions of two arguments.
-Function composition is associative, so in the case of these binary operators, it is sufficient to define composition on just two arguments and let infix notation take care of the rest.
-This is similar to the way `+` is a function of two variables, yet we can still write `a + b + c` without parentheses.
+In R, we can define custom binary operations as functions of two arguments.
+Function composition is associative, which lets me compose multiple functions like `f %.% g %.% h %.% i` without parentheses.
 Associativity tells us the grouping doesn't matter.
+This is similar to the way `+` is a function of two variables, yet we can still write `a + b + c + d` and so on.
 Now that's also functional programming!
 
