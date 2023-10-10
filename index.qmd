@@ -222,7 +222,7 @@ Notice I have to write the `summarize` step again.
 
 ```{r}
 penguins |>
-    group_by(sex, island) |>
+    group_by(sex) |>
     summarize(
         mass_med = median(body_mass_g, na.rm = TRUE),
         mass_mean = mean(body_mass_g, na.rm = TRUE),
